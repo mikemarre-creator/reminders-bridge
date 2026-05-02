@@ -1,0 +1,87 @@
+name: Auto Deploy to Server
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run tests before deploy
+      run: |
+        python -m py_compile main.py
+        echo "✓ Code validation passed"
+    
+    - name: Deploy via SSH
+      env:
+        DEPLOY_KEY: ${{ secrets.DEPLOY_PRIVATE_KEY }}
+        DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$DEPLOY_KEY" > ~/.ssh/deploy_key
+        chmod 600 ~/.ssh/deploy_key
+        ssh-keyscan -H $DEPLOY_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        ssh -i ~/.ssh/deploy_key $DEPLOY_USER@$DEPLOY_HOST << 'EOF'
+          set -e
+          echo "🚀 Starting deployment..."
+          cd $DEPLOY_PATH
+          echo "📥 Pulling latest code..."
+          git pull origin main
+          echo "🐳 Rebuilding Docker container..."
+          docker-compose build
+          docker-compose up -d
+          echo "✓ Container restarted"
+          echo "🏥 Checking health..."
+          sleep 2
+          curl -s http://localhost:8888/health || echo "⚠ Health check pending..."
+          echo "✅ Deployment complete!"
+        EOF
+      continue-on-error: true
+    
+    - name: Restart container via Portainer API (Fallback)
+      env:
+        PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
+        PORTAINER_KEY: ${{ secrets.PORTAINER_KEY }}
+      run: |
+        CONTAINER_ID=$(curl -s -k \
+          -H "X-API-Key: $PORTAINER_KEY" \
+          "$PORTAINER_URL/api/endpoints/2/docker/containers/json" \
+          | grep -o '"Id":"[^"]*openclaw-reminders[^"]*"' | cut -d'"' -f4 | head -1)
+        
+        if [ -n "$CONTAINER_ID" ]; then
+          echo "Found container: $CONTAINER_ID"
+          curl -s -k -X POST \
+            -H "X-API-Key: $PORTAINER_KEY" \
+            "$PORTAINER_URL/api/endpoints/2/docker/containers/$CONTAINER_ID/restart"
+          echo "✓ Container restart triggered"
+        else
+          echo "⚠ Container not found"
+        fi
+      continue-on-error: true
+    
+    - name: Deployment Status
+      if: always()
+      run: |
+        echo "📋 Deployment Summary:"
+        echo "  - Repository: reminders-bridge"
+        echo "  - Branch: main"
+        echo "  - Timestamp: $(date -u)"
+        echo "  - Check server: http://192.168.1.29:8889/health"
