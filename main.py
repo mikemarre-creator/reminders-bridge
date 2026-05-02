@@ -63,6 +63,7 @@ def init_db():
             retrieved_at TEXT,
             resolved INTEGER DEFAULT 0,
             resolved_at TEXT,
+            acknowledged_delete_at TEXT,
             UNIQUE(title, due)
         )
     """)
@@ -75,6 +76,8 @@ def init_db():
         cursor.execute("ALTER TABLE reminders ADD COLUMN resolved INTEGER DEFAULT 0")
     if 'resolved_at' not in columns:
         cursor.execute("ALTER TABLE reminders ADD COLUMN resolved_at TEXT")
+    if 'acknowledged_delete_at' not in columns:
+        cursor.execute("ALTER TABLE reminders ADD COLUMN acknowledged_delete_at TEXT")
     
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_retrieved 
@@ -225,10 +228,11 @@ async def get_pending_reminders():
     """, [retrieved_at] + reminder_ids)
     
     # Get resolved reminders (to tell iPhone to delete them)
+    # Only return those that haven't been acknowledged yet
     cursor.execute("""
         SELECT id, title
         FROM reminders
-        WHERE resolved = 1 AND retrieved_at IS NOT NULL
+        WHERE resolved = 1 AND retrieved_at IS NOT NULL AND acknowledged_delete_at IS NULL
     """)
     
     resolved_rows = cursor.fetchall()
@@ -289,6 +293,30 @@ async def resolve_reminder(reminder_id: int):
     
     return {"status": "resolved", "id": reminder_id, "resolved_at": resolved_at}
 
+@app.patch("/reminders/{reminder_id}/acknowledge-delete", dependencies=[Depends(verify_api_key)])
+async def acknowledge_delete(reminder_id: int):
+    """iPhone acknowledges it has deleted the reminder from the device
+    After this, the reminder won't appear in to_delete on future syncs
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    acknowledged_at = datetime.utcnow().isoformat()
+    
+    cursor.execute(
+        "UPDATE reminders SET acknowledged_delete_at = ? WHERE id = ?",
+        (acknowledged_at, reminder_id)
+    )
+    
+    if cursor.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    
+    conn.commit()
+    conn.close()
+    
+    return {"status": "acknowledged", "id": reminder_id, "acknowledged_at": acknowledged_at}
+
 @app.delete("/reminders/{reminder_id}", dependencies=[Depends(verify_api_key)])
 async def delete_reminder(reminder_id: int):
     """Permanently delete a specific reminder by ID"""
@@ -319,14 +347,14 @@ async def list_all_reminders(limit: int = 50, show_resolved: bool = False):
     
     if show_resolved:
         query = """
-            SELECT id, title, due, list, priority, urgent, notes, created_at, retrieved_at, resolved, resolved_at
+            SELECT id, title, due, list, priority, urgent, notes, created_at, retrieved_at, resolved, resolved_at, acknowledged_delete_at
             FROM reminders
             ORDER BY created_at DESC
             LIMIT ?
         """
     else:
         query = """
-            SELECT id, title, due, list, priority, urgent, notes, created_at, retrieved_at, resolved, resolved_at
+            SELECT id, title, due, list, priority, urgent, notes, created_at, retrieved_at, resolved, resolved_at, acknowledged_delete_at
             FROM reminders
             WHERE resolved = 0
             ORDER BY created_at DESC
@@ -350,7 +378,8 @@ async def list_all_reminders(limit: int = 50, show_resolved: bool = False):
             "created_at": row[7],
             "retrieved_at": row[8],
             "resolved": bool(row[9]),
-            "resolved_at": row[10]
+            "resolved_at": row[10],
+            "acknowledged_delete_at": row[11]
         })
     
     return {"reminders": reminders, "count": len(reminders)}
