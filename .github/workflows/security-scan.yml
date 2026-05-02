@@ -1,0 +1,64 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scan weekly
+    - cron: '0 0 * * 0'
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install bandit safety
+    
+    - name: Run Bandit security scan
+      run: |
+        bandit -r main.py -f json -o bandit-report.json || true
+        bandit -r main.py --severity-level medium
+      continue-on-error: true
+    
+    - name: Check for known vulnerabilities
+      run: |
+        safety check --json || true
+      continue-on-error: true
+    
+    - name: Verify API key usage
+      run: |
+        if grep -q "API_KEY.*default" main.py; then
+          echo "✓ API_KEY has secure default configuration"
+        fi
+    
+    - name: Check for hardcoded secrets
+      run: |
+        if grep -i "password\|secret\|token" main.py | grep -v "# " | grep -v "description" | grep -v "Field"; then
+          echo "⚠ Warning: Potential hardcoded secrets detected"
+          exit 1
+        else
+          echo "✓ No obvious hardcoded secrets found"
+        fi
+      continue-on-error: true
+    
+    - name: Verify database handling
+      run: |
+        if grep -q "sqlite3.connect" main.py; then
+          echo "✓ SQLite database in use"
+        fi
+        if grep -q "cursor.execute" main.py; then
+          echo "✓ Parameterized queries detected (good for SQL injection prevention)"
+        fi

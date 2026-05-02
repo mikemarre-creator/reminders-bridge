@@ -1,0 +1,68 @@
+name: Docker Build & Test
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: false
+        tags: reminders-bridge:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+    
+    - name: Test Docker build
+      run: |
+        docker build -t reminders-bridge:test .
+        echo "✓ Docker image built successfully"
+    
+    - name: Verify Dockerfile
+      run: |
+        if ! grep -q "EXPOSE 8888" Dockerfile; then
+          echo "Error: Port 8888 not exposed"
+          exit 1
+        fi
+        if ! grep -q "uvicorn" Dockerfile; then
+          echo "Error: uvicorn not in Dockerfile"
+          exit 1
+        fi
+        echo "✓ Dockerfile structure verified"
+    
+    - name: Verify docker-compose.yml
+      run: |
+        if ! grep -q "reminders-bridge" docker-compose.yml; then
+          echo "Error: Service name not found"
+          exit 1
+        fi
+        if ! grep -q "8888" docker-compose.yml; then
+          echo "Error: Port mapping not found"
+          exit 1
+        fi
+        echo "✓ docker-compose.yml verified"
+    
+    - name: Check requirements.txt
+      run: |
+        if ! grep -q "fastapi" requirements.txt; then
+          echo "Error: fastapi not in requirements"
+          exit 1
+        fi
+        if ! grep -q "uvicorn" requirements.txt; then
+          echo "Error: uvicorn not in requirements"
+          exit 1
+        fi
+        echo "✓ requirements.txt verified"
