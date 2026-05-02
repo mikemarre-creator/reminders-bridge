@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  reminders-bridge:
+    build: .
+    container_name: openclaw-reminders-bridge
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    environment:
+      - API_KEY=${API_KEY:-openclaw-reminders-2026-secure-key}
+      - DB_PATH=/data/reminders.db
+    volumes:
+      - ./data:/data
+    networks:
+      - openclaw-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8888/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+networks:
+  openclaw-network:
+    driver: bridge
